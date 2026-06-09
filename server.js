@@ -12,7 +12,8 @@ const QRCode = require('qrcode');
 
 process.title = 'PhoneBridge';
 
-const PORT = 9147;
+const PORT = 9147;            // preferred port
+const MAX_PORT_TRIES = 20;    // if 9147 is busy, fall forward: 9148, 9149, ... 9166
 const state = { clipboard: '', files: [], links: [], events: [] };
 
 // ---------- IP detection ----------
@@ -260,9 +261,22 @@ function startServer() {
     res.writeHead(404); res.end('not found');
   });
 
+  // Try PORT first; if it's already in use, automatically step forward to the
+  // next port and try again, up to MAX_PORT_TRIES. Resolves with the port that
+  // actually bound so the QR/URL always points at the right one.
   return new Promise((resolve, reject) => {
-    server.listen(PORT, '0.0.0.0', resolve);
-    server.on('error', reject);
+    let port = PORT;
+    let tries = 0;
+    server.on('listening', () => resolve(port));
+    server.on('error', (err) => {
+      if (err && err.code === 'EADDRINUSE' && tries < MAX_PORT_TRIES - 1) {
+        tries++; port++;
+        setImmediate(() => server.listen(port, '0.0.0.0'));
+      } else {
+        reject(err);
+      }
+    });
+    server.listen(port, '0.0.0.0');
   });
 }
 
@@ -346,16 +360,21 @@ async function boot() {
     return;
   }
 
-  console.log('    > spawning HTTP listener on :' + PORT + ' .......... [  OK  ]');
+  let activePort;
   try {
-    await startServer();
+    activePort = await startServer();
   } catch (e) {
-    console.log('    [ FAIL ]  Port ' + PORT + ' is already in use.');
-    console.log('              Close any other PhoneBridge instance and try again.');
+    console.log('    [ FAIL ]  Could not open a port (tried ' + PORT + '-' + (PORT + MAX_PORT_TRIES - 1) + ').');
+    console.log('              Close any other PhoneBridge instances and try again.');
     return;
   }
+  if (activePort === PORT) {
+    console.log('    > spawning HTTP listener on :' + activePort + ' .......... [  OK  ]');
+  } else {
+    console.log('    > port ' + PORT + ' was busy - using :' + activePort + ' instead ... [  OK  ]');
+  }
 
-  const url = `http://${ips[0].address}:${PORT}`;
+  const url = `http://${ips[0].address}:${activePort}`;
   console.log('    > generating QR token .................... [  OK  ]');
   console.log('    > establishing bridge daemon ............. [  OK  ]');
   console.log('');
@@ -381,7 +400,7 @@ async function boot() {
     console.log('       Phone can\'t connect? Your PC has more than one network');
     console.log('       adapter — try one of these addresses instead:');
     for (const c of ips) {
-      console.log('         http://' + c.address + ':' + PORT + '   (' + c.name + ')');
+      console.log('         http://' + c.address + ':' + activePort + '   (' + c.name + ')');
     }
   }
   console.log('');
