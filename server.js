@@ -41,10 +41,50 @@ const DESKTOP_DIR = getDesktopDir();
 const BRIDGE_DIR = path.join(DESKTOP_DIR, 'PhoneBridge');
 const RECEIVED_DIR = path.join(BRIDGE_DIR, 'Received from Phone');
 const OUTBOX_DIR = path.join(BRIDGE_DIR, 'Send to Phone');
+const NOTEPAD_FILE = path.join(BRIDGE_DIR, 'Notepad.txt');
 function ensureFolders() {
   for (const d of [BRIDGE_DIR, RECEIVED_DIR, OUTBOX_DIR]) {
     try { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); } catch (_) {}
   }
+  try { if (!fs.existsSync(NOTEPAD_FILE)) fs.writeFileSync(NOTEPAD_FILE, ''); } catch (_) {}
+}
+
+// ---------- Shared Notepad (PC -> phone, realtime) ----------
+// Desktop\PhoneBridge\Notepad.txt is the share channel: type or paste text and
+// links, hit Ctrl+S, and the phone's Notepad tab shows it within ~2 seconds.
+// The server polls the file's mtime every second (fs.watch double-fires on
+// Windows; mtime polling is rock-solid and costs nothing at this scale).
+function readNotepadFile() {
+  try {
+    let t = fs.readFileSync(NOTEPAD_FILE, 'utf8');
+    if (t.charCodeAt(0) === 0xFEFF) t = t.slice(1); // strip BOM (Notepad UTF-8 w/ BOM)
+    return t;
+  } catch (_) { return ''; }
+}
+
+let lastNotepad = { mtimeMs: -1, size: -1 };
+function checkNotepad(silent) {
+  try {
+    const st = fs.statSync(NOTEPAD_FILE);
+    if (st.mtimeMs === lastNotepad.mtimeMs && st.size === lastNotepad.size) return false;
+    lastNotepad = { mtimeMs: st.mtimeMs, size: st.size };
+    const text = readNotepadFile();
+    if (text === state.shared.text) return false;
+    state.shared = { text, time: Date.now(), from: 'pc' };
+    if (!silent) {
+      const flat = text.replace(/\s+/g, ' ').trim();
+      const preview = flat.length > 50 ? flat.slice(0, 47) + '...' : (flat || '(cleared)');
+      logEvent('to-phone', 'Notepad: ' + preview);
+    }
+    return true;
+  } catch (_) { return false; }
+}
+
+function startNotepadWatch() {
+  ensureFolders();
+  checkNotepad(true); // load whatever is already in the file, silently
+  const t = setInterval(() => checkNotepad(false), 1000);
+  if (t.unref) t.unref();
 }
 
 // ---------- PC clipboard (PC -> phone) ----------
@@ -58,17 +98,21 @@ function readPcClipboard() {
   } catch (_) { return ''; }
 }
 
-// The terminal "clipboard button": publishes the current PC clipboard to the
-// shared state; the phone page picks it up within ~2s via polling.
+// The terminal shortcut: pastes the current PC clipboard into the shared
+// Notepad (appended on a new line) and publishes it to the phone immediately.
 function pushPcClipboard() {
-  const text = readPcClipboard();
-  if (!text) { logEvent('to-phone', 'PC clipboard is empty - nothing sent'); return; }
-  state.shared = { text, time: Date.now(), from: 'pc' };
-  const preview = text.length > 60 ? text.slice(0, 57) + '...' : text;
-  logEvent('to-phone', preview.replace(/\s+/g, ' '));
+  const clip = readPcClipboard();
+  if (!clip) { logEvent('to-phone', 'PC clipboard is empty - nothing added'); return; }
+  ensureFolders();
+  const cur = readNotepadFile();
+  const next = cur.trim() ? cur.replace(/\s+$/, '') + '\n\n' + clip + '\n' : clip + '\n';
+  try { fs.writeFileSync(NOTEPAD_FILE, next); } catch (_) {}
+  checkNotepad(true); // publish now instead of waiting for the next tick
+  const preview = clip.replace(/\s+/g, ' ').slice(0, 47);
+  logEvent('to-phone', 'clipboard pasted into Notepad: ' + preview + (clip.length > 47 ? '...' : ''));
 }
 
-// Press C in the terminal to send the PC clipboard to the phone.
+// Press C in the terminal to paste the PC clipboard into the Notepad.
 // Raw mode bypasses the default SIGINT, so Ctrl+C (0x03) is handled here too.
 function setupHotkeys() {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') return;
@@ -257,20 +301,9 @@ function startServer() {
     }
 
     // ---- PC -> phone ----
-    // Latest shared clipboard text; the phone polls this every ~2s so a C-key
-    // push on the PC shows up in the browser without a refresh.
+    // Latest shared Notepad contents; the phone polls this every ~2s, so a
+    // Ctrl+S in Notepad.txt (or a C-key paste) shows up without a refresh.
     if (req.method === 'GET' && url.pathname === '/pc/shared') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify(state.shared));
-    }
-
-    // On-demand pull: read the PC clipboard right now and share it.
-    if (req.method === 'GET' && url.pathname === '/pc/clipboard') {
-      const text = readPcClipboard();
-      state.shared = { text, time: Date.now(), from: 'pc' };
-      logEvent('to-phone', text
-        ? 'clipboard pulled by phone (' + text.length + ' chars)'
-        : 'clipboard pulled by phone (empty)');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(state.shared));
     }
@@ -319,8 +352,6 @@ function startServer() {
       req.on('data', d => body += d);
       req.on('end', () => {
         try { state.clipboard = JSON.parse(body).text || ''; } catch { state.clipboard = body; }
-        // Keep the shared clipboard in sync so both sides see the latest text.
-        state.shared = { text: state.clipboard, time: Date.now(), from: 'phone' };
         try {
           const tmp = path.join(os.tmpdir(), 'phonebridge_clip.txt');
           fs.writeFileSync(tmp, state.clipboard, 'utf8');
@@ -505,7 +536,8 @@ async function boot() {
   }
 
   ensureFolders();
-  console.log('    > Desktop\\PhoneBridge folders ready ...... [  OK  ]');
+  startNotepadWatch();
+  console.log('    > Desktop\\PhoneBridge folders + Notepad .. [  OK  ]');
 
   const url = `http://${ips[0].address}:${activePort}`;
   console.log('    > generating QR token .................... [  OK  ]');
@@ -543,10 +575,12 @@ async function boot() {
   console.log('');
   console.log('  Waiting for phone... incoming events will appear below.');
   console.log('');
-  console.log('  [ C ]      send your PC clipboard (text or link) to the phone');
+  console.log('  [ C ]      paste your PC clipboard into the shared Notepad');
   console.log('  [ Ctrl+C ] quit');
   console.log('');
-  console.log('  Desktop\\PhoneBridge folders:');
+  console.log('  Desktop\\PhoneBridge folder:');
+  console.log('    Notepad.txt          -> open it, type text/links, hit Ctrl+S;');
+  console.log('                            the phone sees it within ~2 seconds');
   console.log('    Send to Phone        -> drop files here, download them on the phone');
   console.log('    Received from Phone  -> files sent from the phone land here');
   console.log('');
@@ -558,7 +592,8 @@ async function boot() {
 module.exports = {
   getLocalIPs, getRoutingSourceIP, ipIsBindable, resolveLocalIPs, printBanner,
   readPcClipboard, pushPcClipboard, setupHotkeys, ensureFolders,
-  BRIDGE_DIR, RECEIVED_DIR, OUTBOX_DIR, state,
+  readNotepadFile, checkNotepad, startNotepadWatch,
+  BRIDGE_DIR, RECEIVED_DIR, OUTBOX_DIR, NOTEPAD_FILE, state,
 };
 
 if (!process.env.PB_NO_BOOT) {

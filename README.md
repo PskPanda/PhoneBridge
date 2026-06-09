@@ -34,17 +34,20 @@ Windows can double-click it. No Node.js, no setup, nothing else required.
 
 1. Run the exe — the terminal shows a QR code. Point your iPhone camera at it.
 2. Tap the link, then in Safari: Share → Add to Home Screen.
-3. Two folders are created on your Desktop automatically:
-   - `Desktop\PhoneBridge\Received from Phone` — files sent from the phone land here
-   - `Desktop\PhoneBridge\Send to Phone` — drop files here to send them to the phone
+3. A `PhoneBridge` folder is created on your Desktop automatically:
+   - `Notepad.txt` — the shared notepad (PC → phone text/links, realtime)
+   - `Received from Phone` — files sent from the phone land here
+   - `Send to Phone` — drop files here to send them to the phone
 
 **Phone → PC:** send text/clipboard, files, and links from the phone's tabs.
 Every transfer scrolls live in the terminal.
 
-**PC → phone:** press **C** in the PhoneBridge window to beam your PC clipboard
-(text or a link) to the phone — it appears live on the phone's **From PC** tab
-within a couple of seconds (links show an "Open link" button). Files dropped in
-`Send to Phone` are listed on the same tab, tap to download.
+**PC → phone:** open `Desktop\PhoneBridge\Notepad.txt`, type any text or links,
+and hit **Ctrl+S** — the phone's **Notepad** tab updates within ~2 seconds
+(links get an "Open link" button, and there's a copy-to-phone-clipboard button).
+Shortcut: press **C** in the PhoneBridge window to paste your PC clipboard
+straight into the Notepad. Files dropped in `Send to Phone` are listed on the
+same tab, tap to download.
 
 Close the terminal or press Ctrl+C to stop.
 

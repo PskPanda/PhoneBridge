@@ -192,7 +192,7 @@
     <span class="tab-icon">🔗</span>Links
   </button>
   <button class="tab" data-panel="frompc">
-    <span class="tab-icon">💻</span>From PC
+    <span class="tab-icon">📝</span>Notepad
   </button>
 </div>
 
@@ -238,14 +238,12 @@
 </div>
 
 <div id="tab-frompc" class="panel">
-  <p class="section-label">Shared clipboard — press C on your PC</p>
-  <textarea id="pc-shared" readonly placeholder="Press C in the PhoneBridge window on your PC — whatever is on its clipboard appears here automatically…" rows="4"></textarea>
+  <p class="section-label">Shared notepad — live from your PC</p>
+  <textarea id="pc-shared" readonly placeholder="On your PC, open Desktop\PhoneBridge\Notepad.txt, type text or links, and hit Ctrl+S — it appears here within seconds. (Or press C in the PhoneBridge window to paste the PC clipboard into it.)" rows="6"></textarea>
   <div class="spacer-sm"></div>
   <button class="btn btn-primary" id="open-link-btn" style="display:none" onclick="openSharedLink()">🔗 Open link</button>
   <div class="spacer-sm"></div>
   <button class="btn btn-teal" onclick="copyPcClip()">📲 Copy to phone clipboard</button>
-  <div class="spacer-sm"></div>
-  <button class="btn btn-outline" onclick="getPcClipboard()">⬇️ Pull PC clipboard now</button>
   <div class="spacer"></div>
   <div id="pc-files">
     <p class="section-label">Files from PC</p>
@@ -254,8 +252,9 @@
   <div class="spacer-sm"></div>
   <button class="btn btn-outline" onclick="loadPcFiles()">🔄 Refresh files</button>
   <p style="margin-top:12px; color: var(--muted); font-size:12px; line-height:1.6;">
-    On your PC, drop files into <b>Desktop\PhoneBridge\Send to Phone</b> — they
-    appear above. Tap one to download.
+    On your PC: type into <b>Desktop\PhoneBridge\Notepad.txt</b> and save for
+    instant text/link sharing, or drop files into
+    <b>Desktop\PhoneBridge\Send to Phone</b> — they appear above, tap to download.
   </p>
 </div>
 
@@ -273,9 +272,9 @@ document.querySelectorAll('.tab').forEach(t => {
   };
 });
 
-// ---- From PC: live shared clipboard ----
-// Polls /pc/shared every 2s while the From PC tab is open, so a C-key press
-// on the PC shows up here without a refresh.
+// ---- Notepad: live shared notepad ----
+// Polls /pc/shared every 2s while the Notepad tab is open, so saving
+// Notepad.txt on the PC shows up here without a refresh.
 let sharedTime = 0, pollTimer = null;
 
 function extractUrl(t) {
@@ -292,7 +291,7 @@ function renderShared(s, quiet) {
   const btn = document.getElementById('open-link-btn');
   btn.style.display = link ? 'block' : 'none';
   if (link) btn.dataset.url = link;
-  if (isUpdate && !quiet && s.from === 'pc') toast('New from PC', '💻');
+  if (isUpdate && !quiet && s.from === 'pc') toast('Notepad updated', '📝');
 }
 
 async function pollShared() {
@@ -308,16 +307,6 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopPolling();
   else if (document.querySelector('.tab[data-panel="frompc"]').classList.contains('active')) startPolling();
 });
-
-async function getPcClipboard() {
-  try {
-    const r = await fetch('/pc/clipboard');
-    const s = await r.json();
-    sharedTime = 0;
-    renderShared(s, true);
-    toast(s.text ? 'Got PC clipboard' : 'PC clipboard is empty', s.text ? '💻' : '⚠️');
-  } catch { toast('Connection error', '❌'); }
-}
 
 async function copyPcClip() {
   const text = document.getElementById('pc-shared').value;
