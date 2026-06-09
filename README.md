@@ -1,4 +1,4 @@
-# PhoneBridge ⚡
+# PhoneBridge
 
 Terminal-native phone-to-PC bridge. Beam clipboard, files, and links from your
 iPhone to your Windows PC over Wi-Fi. No Electron, no installer, no headaches.

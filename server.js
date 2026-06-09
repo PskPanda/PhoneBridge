@@ -267,30 +267,62 @@ function startServer() {
 }
 
 // ---------- Banner ----------
+// The frame is generated (not hand-padded) so every row is exactly the same
+// width and the right border never drifts. Styled like a Greek temple:
+// two columns (||) holding an entablature beam (+===+), standing on temple
+// steps (the widening base). Pure ASCII so it renders on any Windows console.
 function printBanner() {
-  console.log('');
-  console.log(' .----------------------------------------------------------.');
-  console.log(' | [ PHONEBRIDGE.SYS ]                           [ * ONLINE ] |');
-  console.log(' :----------------------------------------------------------:');
-  console.log(' |                                                          |');
-  console.log(' |             /---\\  |   |  /---\\  |\\  |  /----             |');
-  console.log(' |             |   |  |   |  |   |  | \\ |  |                 |');
-  console.log(' |             |---/  |---|  |   |  |  \\|  |----             |');
-  console.log(' |             |      |   |  |   |  |   |  |                 |');
-  console.log(' |             |      |   |  \\---/  |   |  \\----             |');
-  console.log(' |                                                          |');
-  console.log(' |         /---\\  /---\\  |---|  |---\\  /---\\  /----            |');
-  console.log(' |         |   |  |   |    |    |   |  |      |                |');
-  console.log(' |         |---/  |---/    |    |   |  | --\\  |----            |');
-  console.log(' |         |   \\  |  \\     |    |   |  |   |  |                |');
-  console.log(' |         \\---/  |   \\  |---|  |---/  \\---/  \\----            |');
-  console.log(' |                                                          |');
-  console.log(' |                  :: by PskXClaude ::                       |');
-  console.log(' |                                                          |');
-  console.log(' :----------------------------------------------------------:');
-  console.log(' | KEY :: 0xAF.C9.7E.12       PORT :: 9147       PROTO :: AES |');
-  console.log(' \'----------------------------------------------------------\'');
-  console.log('');
+  const W = 56;          // inner content width
+  const M = '  ';        // left margin
+  const COL = '||';      // column shaft (the "pillars")
+
+  const row = (s = '') => {
+    if (s.length > W) s = s.slice(0, W);
+    const total = W - s.length, left = Math.floor(total / 2), right = total - left;
+    return M + COL + ' ' + ' '.repeat(left) + s + ' '.repeat(right) + ' ' + COL;
+  };
+  const rowLR = (l, r) => {
+    const mid = Math.max(1, W - l.length - r.length);
+    return M + COL + ' ' + l + ' '.repeat(mid) + r + ' ' + COL;
+  };
+  const row3 = (l, m, r) => {
+    const gaps = W - l.length - m.length - r.length;
+    const g1 = Math.max(1, Math.floor(gaps / 2)), g2 = Math.max(1, gaps - g1);
+    return M + COL + ' ' + l + ' '.repeat(g1) + m + ' '.repeat(g2) + r + ' ' + COL;
+  };
+  const beam = M + '+' + '='.repeat(W + 4) + '+';      // entablature
+  const block = (rows) => {
+    const maxLen = Math.max(...rows.map(r => r.length));
+    return rows.map(r => row(r.padEnd(maxLen)));
+  };
+
+  const phone = [
+    '/---\\  |   |  /---\\  |\\  |  /----',
+    '|   |  |   |  |   |  | \\ |  |',
+    '|---/  |---|  |   |  |  \\|  |----',
+    '|      |   |  |   |  |   |  |',
+    '|      |   |  \\---/  |   |  \\----',
+  ];
+  const bridge = [
+    '/---\\  /---\\  |---|  |---\\  /---\\  /----',
+    '|   |  |   |    |    |   |  |      |',
+    '|---/  |---/    |    |   |  | --\\  |----',
+    '|   \\  |  \\     |    |   |  |   |  |',
+    '\\---/  |   \\  |---|  |---/  \\---/  \\----',
+  ];
+
+  const out = ['', beam, row()];
+  out.push(rowLR('[ PHONEBRIDGE.SYS ]', '[ * ONLINE ]'), row());
+  out.push(...block(phone), row());
+  out.push(...block(bridge), row());
+  out.push(row(':: by PskXClaude ::'), row());
+  out.push(row3('KEY :: 0xAF.C9.7E.12', 'PORT :: 9147', 'PROTO :: AES'), row());
+  out.push(beam);
+  // temple steps (stylobate) fanning outward
+  out.push(' '  + '+' + '='.repeat(W + 6) + '+');
+  out.push(''   + '+' + '='.repeat(W + 8) + '+');
+  out.push('');
+  console.log(out.join('\n'));
 }
 
 // ---------- Boot sequence ----------
@@ -364,7 +396,7 @@ async function boot() {
 
 // Exported for tests. Boot is skipped when PB_NO_BOOT is set so the IP-resolution
 // logic can be exercised without starting the server.
-module.exports = { getLocalIPs, getRoutingSourceIP, ipIsBindable, resolveLocalIPs };
+module.exports = { getLocalIPs, getRoutingSourceIP, ipIsBindable, resolveLocalIPs, printBanner };
 
 if (!process.env.PB_NO_BOOT) {
   boot().catch(e => {
