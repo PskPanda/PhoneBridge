@@ -19,17 +19,26 @@ function getLocalIPs() {
   const candidates = [];
   for (const [name, addrs] of Object.entries(ifaces)) {
     for (const addr of addrs) {
-      if (addr.family === 'IPv4' && !addr.internal && !addr.address.startsWith('169.254.')) {
-        const lower = name.toLowerCase();
-        if (lower.match(/virtualbox|vmware|hyper-v|vethernet|loopback|vpn|docker/)) continue;
-        let score = 0;
-        if (addr.address.startsWith('192.168.')) score = 100;
-        else if (addr.address.startsWith('10.')) score = 80;
-        else if (addr.address.startsWith('172.')) score = 60;
-        if (lower.match(/wi-?fi|wlan/)) score += 50;
-        if (lower.match(/ethernet|eth/)) score += 30;
-        candidates.push({ name, address: addr.address, score });
-      }
+      // family is 'IPv4' (Node 18+) but was the number 4 in a few releases — accept both.
+      if (addr.family !== 'IPv4' && addr.family !== 4) continue;
+      if (addr.internal) continue;
+      const ip = addr.address;
+      // Reject junk/non-routable addresses some VPN/virtual adapters report.
+      if (!ip || ip === '0.0.0.0' || ip.startsWith('0.') ||
+          ip.startsWith('127.') || ip.startsWith('169.254.')) continue;
+
+      const lower = name.toLowerCase();
+      // Skip virtual machine, container, and VPN adapters by name.
+      if (lower.match(/virtualbox|vmware|hyper-?v|vethernet|loopback|docker|tailscale|zerotier|hamachi|radmin|openvpn|wireguard|nordlynx|\bvpn\b|\btap\b|\btun\b|\bwg\d*\b|\bzt\b|npcap|bluetooth/)) continue;
+
+      let score = 0;
+      if (ip.startsWith('192.168.')) score = 100;                       // most home LANs
+      else if (ip.startsWith('10.')) score = 80;                        // private
+      else if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) score = 60;       // private 172.16-31
+      else score = 10;                                                  // other/routable — last resort
+      if (lower.match(/wi-?fi|wlan|wireless/)) score += 50;
+      else if (lower.match(/ethernet|eth|\blan\b/)) score += 30;
+      candidates.push({ name, address: ip, score });
     }
   }
   candidates.sort((a, b) => b.score - a.score);
@@ -233,8 +242,11 @@ async function boot() {
   const ips = getLocalIPs();
   if (ips.length === 0) {
     console.log('');
-    console.log('    [ FAIL ]  No Wi-Fi connection detected.');
-    console.log('              Connect to Wi-Fi, then restart PhoneBridge.');
+    console.log('    [ FAIL ]  Couldn\'t find your local network address.');
+    console.log('              1. Make sure this PC is connected to Wi-Fi or Ethernet.');
+    console.log('              2. Or find it by hand: open Command Prompt and run  ipconfig');
+    console.log('                 Use the "IPv4 Address" (looks like 192.168.x.x), then on');
+    console.log('                 your phone open  http://THAT-ADDRESS:' + PORT);
     console.log('');
     return;
   }
@@ -269,6 +281,14 @@ async function boot() {
 
   console.log('       Or open in iPhone Safari: ' + url);
   console.log('       Tip: Share -> Add to Home Screen for an app icon');
+  if (ips.length > 1) {
+    console.log('');
+    console.log('       Phone can\'t connect? Your PC has more than one network');
+    console.log('       adapter — try one of these addresses instead:');
+    for (const c of ips) {
+      console.log('         http://' + c.address + ':' + PORT + '   (' + c.name + ')');
+    }
+  }
   console.log('');
   console.log(' :==========================================================:');
   console.log(' |                     LIVE ACTIVITY                         |');
