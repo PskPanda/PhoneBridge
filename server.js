@@ -5,6 +5,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const net = require('net');
+const dgram = require('dgram');
 const { execSync } = require('child_process');
 const QRCode = require('qrcode');
 
@@ -43,6 +45,67 @@ function getLocalIPs() {
   }
   candidates.sort((a, b) => b.score - a.score);
   return candidates;
+}
+
+// Ask the OS which local IP it would actually use to reach the internet.
+// A UDP "connect" only does a routing-table lookup and binds a source address;
+// it sends no packets and needs no real connectivity. This is the single most
+// reliable answer to "what is my real LAN IP" — it can't return a ghost adapter.
+function getRoutingSourceIP() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const sock = dgram.createSocket('udp4');
+    const done = (ip) => {
+      if (settled) return;
+      settled = true;
+      try { sock.close(); } catch (_) {}
+      resolve(ip && ip !== '0.0.0.0' ? ip : null);
+    };
+    sock.on('error', () => done(null));
+    try {
+      sock.connect(80, '8.8.8.8', () => {
+        try { done(sock.address().address); } catch (_) { done(null); }
+      });
+    } catch (_) { done(null); }
+    setTimeout(() => done(null), 600); // never hang boot
+  });
+}
+
+// Prove an address is real: try to actually bind a socket to it. A ghost /
+// stale / unassigned address fails with EADDRNOTAVAIL and gets dropped.
+function ipIsBindable(ip) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    try {
+      srv.listen(0, ip, () => srv.close(() => resolve(true)));
+    } catch (_) { resolve(false); }
+  });
+}
+
+// Final, verified pick: cross-check the name/score heuristic against (1) the OS
+// routing source IP and (2) a real bind test, so we hand the phone an address
+// that is genuinely live and reachable — not a false/ghost IP.
+async function resolveLocalIPs() {
+  const scored = getLocalIPs();
+  // Keep only addresses we can actually bind to (drops ghosts).
+  const live = [];
+  for (const c of scored) {
+    if (await ipIsBindable(c.address)) live.push(c);
+  }
+  // Let the OS's own routing decision win the tie-break.
+  const routeIP = await getRoutingSourceIP();
+  if (routeIP) {
+    const i = live.findIndex(c => c.address === routeIP);
+    if (i > 0) {
+      const [hit] = live.splice(i, 1);
+      live.unshift(hit); // OS-confirmed address -> front of the line
+    } else if (i === -1 && await ipIsBindable(routeIP)) {
+      // The OS chose a live address our heuristic skipped — trust the OS.
+      live.unshift({ name: 'auto-detected', address: routeIP, score: 999 });
+    }
+  }
+  return live;
 }
 
 // ---------- Activity log ----------
@@ -239,7 +302,7 @@ async function boot() {
   console.log('');
 
   console.log('    > probing local interfaces ............... [  OK  ]');
-  const ips = getLocalIPs();
+  const ips = await resolveLocalIPs();
   if (ips.length === 0) {
     console.log('');
     console.log('    [ FAIL ]  Couldn\'t find your local network address.');
@@ -299,13 +362,19 @@ async function boot() {
   console.log('');
 }
 
-boot().catch(e => {
-  console.error('PhoneBridge crashed:', e);
-  console.error('Press any key to close...');
-});
+// Exported for tests. Boot is skipped when PB_NO_BOOT is set so the IP-resolution
+// logic can be exercised without starting the server.
+module.exports = { getLocalIPs, getRoutingSourceIP, ipIsBindable, resolveLocalIPs };
 
-process.on('SIGINT', () => {
-  console.log('');
-  console.log('  > PhoneBridge shutting down. Goodbye.');
-  process.exit(0);
-});
+if (!process.env.PB_NO_BOOT) {
+  boot().catch(e => {
+    console.error('PhoneBridge crashed:', e);
+    console.error('Press any key to close...');
+  });
+
+  process.on('SIGINT', () => {
+    console.log('');
+    console.log('  > PhoneBridge shutting down. Goodbye.');
+    process.exit(0);
+  });
+}
