@@ -1,0 +1,27 @@
+{
+  "name": "phonebridge",
+  "version": "1.0.0",
+  "description": "Terminal-native phone-to-PC bridge",
+  "main": "server.js",
+  "bin": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "PskXClaude",
+  "license": "MIT",
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.16.1",
+    "rcedit": "^5.0.2"
+  },
+  "pkg": {
+    "assets": [
+      "phone.html",
+      "manifest.webmanifest",
+      "assets/**/*"
+    ],
+    "outputPath": "dist"
+  }
+}

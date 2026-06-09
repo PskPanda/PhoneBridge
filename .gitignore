@@ -1,0 +1,27 @@
+# Whitelist .gitignore: ignore everything, then allow only the files
+# Build.bat needs to compile a working PhoneBridge.exe. This guarantees no
+# bloat (node_modules, build output, generated/dead files) is ever committed.
+
+# 1) Ignore everything by default
+*
+
+# 2) Allow the repo metadata + build essentials
+!.gitignore
+!README.md
+!Build.bat
+!package.json
+!package-lock.json
+!server.js
+!prepare.js
+!build-with-icon.js
+!verify-build.js
+!phone.html
+!manifest.webmanifest
+
+# 3) Allow the assets folder, but only the icons the build actually uses
+!assets/
+assets/*
+!assets/PhoneBridge.ico
+!assets/apple-touch-icon.png
+!assets/icon-192.png
+!assets/icon-512.png
