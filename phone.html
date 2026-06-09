@@ -57,7 +57,7 @@
   }
   @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(0.85); } }
   .tabs {
-    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    display: grid; grid-template-columns: repeat(4, 1fr);
     background: var(--surface); border-bottom: 1px solid var(--border);
     position: sticky; top: calc(env(safe-area-inset-top) + 63px); z-index: 9;
   }
@@ -191,6 +191,9 @@
   <button class="tab" data-panel="links">
     <span class="tab-icon">🔗</span>Links
   </button>
+  <button class="tab" data-panel="frompc">
+    <span class="tab-icon">💻</span>From PC
+  </button>
 </div>
 
 <div id="tab-clipboard" class="panel active">
@@ -208,7 +211,7 @@
     <input type="file" id="file-input" multiple onchange="handleFiles(this.files)">
     <span class="upload-icon">☁️</span>
     <h3>Tap to choose file</h3>
-    <p>Any file type — saved to Downloads/PhoneBridge</p>
+    <p>Any file type — saved to Desktop\PhoneBridge\Received from Phone</p>
   </div>
   <div class="progress-bar" id="progress-bar">
     <div class="progress-fill" id="progress-fill"></div>
@@ -234,6 +237,28 @@
   </div>
 </div>
 
+<div id="tab-frompc" class="panel">
+  <p class="section-label">Shared clipboard — press C on your PC</p>
+  <textarea id="pc-shared" readonly placeholder="Press C in the PhoneBridge window on your PC — whatever is on its clipboard appears here automatically…" rows="4"></textarea>
+  <div class="spacer-sm"></div>
+  <button class="btn btn-primary" id="open-link-btn" style="display:none" onclick="openSharedLink()">🔗 Open link</button>
+  <div class="spacer-sm"></div>
+  <button class="btn btn-teal" onclick="copyPcClip()">📲 Copy to phone clipboard</button>
+  <div class="spacer-sm"></div>
+  <button class="btn btn-outline" onclick="getPcClipboard()">⬇️ Pull PC clipboard now</button>
+  <div class="spacer"></div>
+  <div id="pc-files">
+    <p class="section-label">Files from PC</p>
+    <div class="empty-state"><span class="em">🗂️</span>Loading…</div>
+  </div>
+  <div class="spacer-sm"></div>
+  <button class="btn btn-outline" onclick="loadPcFiles()">🔄 Refresh files</button>
+  <p style="margin-top:12px; color: var(--muted); font-size:12px; line-height:1.6;">
+    On your PC, drop files into <b>Desktop\PhoneBridge\Send to Phone</b> — they
+    appear above. Tap one to download.
+  </p>
+</div>
+
 <div class="toast" id="toast"><span class="t-icon">✓</span><span id="toast-msg"></span></div>
 
 <script>
@@ -243,9 +268,90 @@ document.querySelectorAll('.tab').forEach(t => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.getElementById('tab-' + t.dataset.panel).classList.add('active');
     t.classList.add('active');
-    if (t.dataset.panel !== 'clipboard') loadHistory(t.dataset.panel);
+    if (t.dataset.panel === 'frompc') { startPolling(); loadPcFiles(); }
+    else { stopPolling(); if (t.dataset.panel !== 'clipboard') loadHistory(t.dataset.panel); }
   };
 });
+
+// ---- From PC: live shared clipboard ----
+// Polls /pc/shared every 2s while the From PC tab is open, so a C-key press
+// on the PC shows up here without a refresh.
+let sharedTime = 0, pollTimer = null;
+
+function extractUrl(t) {
+  const m = String(t || '').match(/https?:\/\/[^\s]+/i);
+  return m ? m[0] : null;
+}
+
+function renderShared(s, quiet) {
+  if (!s || !s.time || s.time <= sharedTime) return;
+  const isUpdate = sharedTime !== 0;
+  sharedTime = s.time;
+  document.getElementById('pc-shared').value = s.text || '';
+  const link = extractUrl(s.text);
+  const btn = document.getElementById('open-link-btn');
+  btn.style.display = link ? 'block' : 'none';
+  if (link) btn.dataset.url = link;
+  if (isUpdate && !quiet && s.from === 'pc') toast('New from PC', '💻');
+}
+
+async function pollShared() {
+  try { const r = await fetch('/pc/shared'); renderShared(await r.json()); } catch {}
+}
+function startPolling() {
+  if (!pollTimer) { pollShared(); pollTimer = setInterval(pollShared, 2000); }
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPolling();
+  else if (document.querySelector('.tab[data-panel="frompc"]').classList.contains('active')) startPolling();
+});
+
+async function getPcClipboard() {
+  try {
+    const r = await fetch('/pc/clipboard');
+    const s = await r.json();
+    sharedTime = 0;
+    renderShared(s, true);
+    toast(s.text ? 'Got PC clipboard' : 'PC clipboard is empty', s.text ? '💻' : '⚠️');
+  } catch { toast('Connection error', '❌'); }
+}
+
+async function copyPcClip() {
+  const text = document.getElementById('pc-shared').value;
+  if (!text) { toast('Nothing to copy yet', '⚠️'); return; }
+  try { await navigator.clipboard.writeText(text); toast('Copied to phone clipboard', '📲'); }
+  catch { toast('Select the text and copy manually', '⚠️'); }
+}
+
+function openSharedLink() {
+  const url = document.getElementById('open-link-btn').dataset.url;
+  if (url) window.open(url, '_blank');
+}
+
+async function loadPcFiles() {
+  const el = document.getElementById('pc-files');
+  try {
+    const r = await fetch('/pc/files');
+    const data = await r.json();
+    if (!data.files.length) {
+      el.innerHTML = '<p class="section-label">Files from PC</p><div class="empty-state"><span class="em">🗂️</span>No files yet — drop some into Desktop\\PhoneBridge\\Send to Phone on your PC</div>';
+      return;
+    }
+    el.innerHTML = '<p class="section-label">Files from PC</p><div class="history-list">' + data.files.map(f => `
+      <a class="history-item" style="text-decoration:none;color:inherit" href="/pc/file?name=${encodeURIComponent(f.name)}" download="${escapeHtml(f.name)}">
+        <div class="h-icon file">📄</div>
+        <div class="h-text">
+          <div class="h-title">${escapeHtml(f.name)}</div>
+          <div class="h-sub">${formatSize(f.size)} · ${timeAgo(f.time)} · tap to download</div>
+        </div>
+      </a>`).join('') + '</div>';
+  } catch {
+    el.innerHTML = '<p class="section-label">Files from PC</p><div class="empty-state"><span class="em">❌</span>Connection error</div>';
+  }
+}
 
 function toast(msg, emoji = '✓') {
   const t = document.getElementById('toast');

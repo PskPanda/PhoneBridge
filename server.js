@@ -16,6 +16,75 @@ const PORT = 9147;            // preferred port
 const MAX_PORT_TRIES = 20;    // if 9147 is busy, fall forward: 9148, 9149, ... 9166
 const state = { clipboard: '', files: [], links: [], events: [] };
 
+// Shared clipboard: the latest text/link pushed from either side.
+// PC -> phone: press C in the terminal. Phone -> PC: the Clipboard tab.
+// The phone page polls /pc/shared so new PC pushes appear live in the browser.
+state.shared = { text: '', time: 0, from: '' };
+
+// ---------- Desktop folders ----------
+// Two folders on the user's Desktop, created at boot:
+//   PhoneBridge\Received from Phone  <- files sent from the phone land here
+//   PhoneBridge\Send to Phone        <- drop files here; phone downloads them
+// Windows often redirects the Desktop into OneDrive, so ask the shell for the
+// real path instead of guessing homedir\Desktop.
+function getDesktopDir() {
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "[Environment]::GetFolderPath(\'Desktop\')"',
+      { encoding: 'utf8' }
+    ).trim();
+    if (out && fs.existsSync(out)) return out;
+  } catch (_) {}
+  return path.join(os.homedir(), 'Desktop');
+}
+const DESKTOP_DIR = getDesktopDir();
+const BRIDGE_DIR = path.join(DESKTOP_DIR, 'PhoneBridge');
+const RECEIVED_DIR = path.join(BRIDGE_DIR, 'Received from Phone');
+const OUTBOX_DIR = path.join(BRIDGE_DIR, 'Send to Phone');
+function ensureFolders() {
+  for (const d of [BRIDGE_DIR, RECEIVED_DIR, OUTBOX_DIR]) {
+    try { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); } catch (_) {}
+  }
+}
+
+// ---------- PC clipboard (PC -> phone) ----------
+// Reads the Windows clipboard UTF-8-safely (handles emoji/unicode) via a temp
+// file, because piping PowerShell output mangles non-ASCII text.
+function readPcClipboard() {
+  try {
+    const tmp = path.join(os.tmpdir(), 'phonebridge_getclip.txt');
+    execSync(`powershell -NoProfile -Command "$t = Get-Clipboard -Raw; if ($null -eq $t) { $t = '' }; [IO.File]::WriteAllText('${tmp}', $t, (New-Object System.Text.UTF8Encoding $false))"`, { stdio: 'ignore' });
+    return fs.readFileSync(tmp, 'utf8');
+  } catch (_) { return ''; }
+}
+
+// The terminal "clipboard button": publishes the current PC clipboard to the
+// shared state; the phone page picks it up within ~2s via polling.
+function pushPcClipboard() {
+  const text = readPcClipboard();
+  if (!text) { logEvent('to-phone', 'PC clipboard is empty - nothing sent'); return; }
+  state.shared = { text, time: Date.now(), from: 'pc' };
+  const preview = text.length > 60 ? text.slice(0, 57) + '...' : text;
+  logEvent('to-phone', preview.replace(/\s+/g, ' '));
+}
+
+// Press C in the terminal to send the PC clipboard to the phone.
+// Raw mode bypasses the default SIGINT, so Ctrl+C (0x03) is handled here too.
+function setupHotkeys() {
+  if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') return;
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.on('data', (b) => {
+    if (b.length === 1 && b[0] === 0x03) {  // Ctrl+C
+      console.log('');
+      console.log('  > PhoneBridge shutting down. Goodbye.');
+      process.exit(0);
+    }
+    const k = b.toString();
+    if (k === 'c' || k === 'C') pushPcClipboard();
+  });
+}
+
 // ---------- IP detection ----------
 function getLocalIPs() {
   const ifaces = os.networkInterfaces();
@@ -187,11 +256,71 @@ function startServer() {
       }));
     }
 
+    // ---- PC -> phone ----
+    // Latest shared clipboard text; the phone polls this every ~2s so a C-key
+    // push on the PC shows up in the browser without a refresh.
+    if (req.method === 'GET' && url.pathname === '/pc/shared') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(state.shared));
+    }
+
+    // On-demand pull: read the PC clipboard right now and share it.
+    if (req.method === 'GET' && url.pathname === '/pc/clipboard') {
+      const text = readPcClipboard();
+      state.shared = { text, time: Date.now(), from: 'pc' };
+      logEvent('to-phone', text
+        ? 'clipboard pulled by phone (' + text.length + ' chars)'
+        : 'clipboard pulled by phone (empty)');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(state.shared));
+    }
+
+    // List the Desktop\PhoneBridge\Send to Phone folder.
+    if (req.method === 'GET' && url.pathname === '/pc/files') {
+      ensureFolders();
+      let files = [];
+      try {
+        files = fs.readdirSync(OUTBOX_DIR, { withFileTypes: true })
+          .filter(d => d.isFile())
+          .map(d => {
+            const st = fs.statSync(path.join(OUTBOX_DIR, d.name));
+            return { name: d.name, size: st.size, time: st.mtimeMs };
+          })
+          .sort((a, b) => b.time - a.time);
+      } catch (_) {}
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ files }));
+    }
+
+    // Download one outbox file. basename() strips any directory tricks and the
+    // resolved path must stay inside the outbox — nothing else is reachable.
+    if (req.method === 'GET' && url.pathname === '/pc/file') {
+      ensureFolders();
+      const fname = path.basename(url.searchParams.get('name') || '');
+      const fpath = path.join(OUTBOX_DIR, fname);
+      let st = null;
+      try { st = fs.statSync(fpath); } catch (_) {}
+      if (!fname || fname === '.' || fname === '..' ||
+          !fpath.startsWith(OUTBOX_DIR + path.sep) || !st || !st.isFile()) {
+        res.writeHead(404); return res.end('not found');
+      }
+      const ascii = fname.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
+      logEvent('to-phone', fname, st.size + ' bytes -> phone');
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': st.size,
+        'Content-Disposition': 'attachment; filename="' + ascii + '"; filename*=UTF-8\'\'' + encodeURIComponent(fname),
+      });
+      return fs.createReadStream(fpath).pipe(res);
+    }
+
     if (req.method === 'POST' && url.pathname === '/clipboard') {
       let body = '';
       req.on('data', d => body += d);
       req.on('end', () => {
         try { state.clipboard = JSON.parse(body).text || ''; } catch { state.clipboard = body; }
+        // Keep the shared clipboard in sync so both sides see the latest text.
+        state.shared = { text: state.clipboard, time: Date.now(), from: 'phone' };
         try {
           const tmp = path.join(os.tmpdir(), 'phonebridge_clip.txt');
           fs.writeFileSync(tmp, state.clipboard, 'utf8');
@@ -239,7 +368,8 @@ function startServer() {
           const fname = nameMatch ? nameMatch[1] : `file_${Date.now()}`;
           const fileData = raw.slice(headerEnd + 4, raw.lastIndexOf('\r\n--' + boundary));
 
-          const outDir = path.join(os.homedir(), 'Downloads', 'PhoneBridge');
+          ensureFolders();
+          const outDir = RECEIVED_DIR;
           if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
           const outPath = path.join(outDir, fname);
           fs.writeFileSync(outPath, fileData);
@@ -374,6 +504,9 @@ async function boot() {
     console.log('    > port ' + PORT + ' was busy - using :' + activePort + ' instead ... [  OK  ]');
   }
 
+  ensureFolders();
+  console.log('    > Desktop\\PhoneBridge folders ready ...... [  OK  ]');
+
   const url = `http://${ips[0].address}:${activePort}`;
   console.log('    > generating QR token .................... [  OK  ]');
   console.log('    > establishing bridge daemon ............. [  OK  ]');
@@ -409,13 +542,24 @@ async function boot() {
   console.log(' :==========================================================:');
   console.log('');
   console.log('  Waiting for phone... incoming events will appear below.');
-  console.log('  Press Ctrl+C to stop.');
   console.log('');
+  console.log('  [ C ]      send your PC clipboard (text or link) to the phone');
+  console.log('  [ Ctrl+C ] quit');
+  console.log('');
+  console.log('  Desktop\\PhoneBridge folders:');
+  console.log('    Send to Phone        -> drop files here, download them on the phone');
+  console.log('    Received from Phone  -> files sent from the phone land here');
+  console.log('');
+  setupHotkeys();
 }
 
 // Exported for tests. Boot is skipped when PB_NO_BOOT is set so the IP-resolution
 // logic can be exercised without starting the server.
-module.exports = { getLocalIPs, getRoutingSourceIP, ipIsBindable, resolveLocalIPs, printBanner };
+module.exports = {
+  getLocalIPs, getRoutingSourceIP, ipIsBindable, resolveLocalIPs, printBanner,
+  readPcClipboard, pushPcClipboard, setupHotkeys, ensureFolders,
+  BRIDGE_DIR, RECEIVED_DIR, OUTBOX_DIR, state,
+};
 
 if (!process.env.PB_NO_BOOT) {
   boot().catch(e => {
